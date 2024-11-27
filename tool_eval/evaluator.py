@@ -69,8 +69,8 @@ class ModelEvaluator:
 
     def evaluate_hermes(self, eval_dataset, chat_template, scratch_pad, num_fewshot):
         for sample in tqdm(eval_dataset, desc="processing samples", unit="sample"):  
-            sample_splits = split_sample(sample)
-            prompt, _ = self.prompter.generate_prompt_hermes(sample_splits)
+            prompts = generate_prompt(sample, enable_system=False)
+            prompt, eval_completion = prompts[:-1], prompts[-1]
             
             inputs = self.tokenizer.apply_chat_template(
                 prompt,
@@ -94,14 +94,14 @@ class ModelEvaluator:
             sample['model_completion'] = []
             sample['result'] = "failed"
 
-            eval_completion = parse_completion(sample_splits['gpt'])
+            eval_completion = parse_completion(eval_completion["content"])
             if eval_completion is None:
-                eval_logger.warning("Failed to parse completion")
+                eval_logger.info("No function calls found in completion")
                 continue
             
             eval_completion = validate_hermes_tool_calls(eval_completion)
             if eval_completion is None:
-                eval_logger.warning("Failed to validate tool calls")
+                eval_logger.info("No valid function calls found in completion")
                 continue
 
             if validation:
@@ -120,10 +120,10 @@ class ModelEvaluator:
                     function_found = False
 
                     for tool_call in tool_calls:
-                        # schema_validation = validate_function_call_schema(tool_call, json.loads(sample['tools']))
-                        # if not schema_validation:
-                        #     all_valid = False
-                        #     break
+                        schema_validation = validate_function_call_schema(tool_call, json.loads(sample['tools']))
+                        if not schema_validation:
+                            all_valid = False
+                            break
 
                         if tool_call['name'] == eval_tool_call['name']:
                             function_found = True
@@ -253,7 +253,7 @@ if __name__ == "__main__":
     if args.dataset_path:
         eval_dataset = load_dataset(args.dataset_path)["train"]
     else:
-        eval_dataset = load_dataset("riczhou/hermes-function-calling-v1-split", split="test")
+        eval_dataset = load_dataset("riczhou/hermes-function-calling-v1-glaive-split", split="test")
 
     # Create model evaluator instance
     model_evaluator = ModelEvaluator(args.model_path, args.chat_template, args.load_in_4bit, args.flash_attn, args.dpo)

@@ -4,22 +4,25 @@ from typing import List, Optional, Dict, Union
 import re
 
 
-def split_sample(sample):
-    assert len(sample["conversations"]) == 3
-
-    system = None
-    human = None
-    gpt = None
+def generate_prompt(sample, enable_system=True):
+    prompt = []
+    sys_prompt = None
 
     for turns in sample["conversations"]:
         if turns["from"] == "system":
-            system = turns["value"]
+            if enable_system:
+                prompt.append({'content': turns["value"], 'role': 'system'})
+            else:
+                sys_prompt = turns["value"]
         elif turns["from"] == "human":
-            human = turns["value"]
+            prompt.append({'content': turns["value"], 'role': 'user'})
         elif turns["from"] == "gpt":
-            gpt = turns["value"]
+            prompt.append({'content': turns["value"], 'role': 'assistant'})
+    
+    if sys_prompt is not None:
+        prompt[0]['content'] = sys_prompt + "\n" + prompt[0]['content']
 
-    return {"system": system, "human": human, "gpt": gpt}
+    return prompt
 
 
 def clean_json_string(s: str) -> str:
