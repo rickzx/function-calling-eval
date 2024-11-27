@@ -49,6 +49,14 @@ class PromptManager:
         )
         return prompt_schema
     
+
+    def generate_prompt_hermes(self, sample_splits):
+        prompt = [
+            {'content': sample_splits['system'], 'role': 'system'},
+            {'content': sample_splits['human'], 'role': 'user'}
+        ]
+        return prompt, sample_splits['system']
+    
     def generate_prompt(self, sample, scratch_pad=False, num_fewshot=None):
         if scratch_pad:
             prompt_path = os.path.join(self.script_dir, 'prompt_assets', 'sys_prompt_scratchpad.yml')

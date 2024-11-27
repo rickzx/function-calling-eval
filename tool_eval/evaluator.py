@@ -1,26 +1,21 @@
 import argparse
-import torch
+import ast
 import json
-from tqdm import tqdm
+import re
+from typing import Dict, List, Optional, Union
+
+import torch
 from datasets import load_dataset
-
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    BitsAndBytesConfig
-)
-
+from hermes_utils import *
 from prompter import PromptManager
+from tqdm import tqdm
+from transformers import (AutoModelForCausalLM, AutoTokenizer,
+                          BitsAndBytesConfig)
+from utils import (calculate_pass_rate, eval_logger, get_assistant_message,
+                   get_chat_template, validate_and_extract_tool_calls_regex,
+                   validate_tool_calls)
 from validator import validate_function_call_schema
 
-from utils import (
-    eval_logger,
-    calculate_pass_rate,
-    get_assistant_message,
-    get_chat_template,
-    validate_tool_calls,
-    validate_and_extract_tool_calls_regex
-)
 
 class ModelEvaluator:
     def __init__(self, model_path, chat_template, load_in_4bit, flash_attn, dpo):
@@ -70,6 +65,91 @@ class ModelEvaluator:
         eval_logger.info(self.model.parameters)
         eval_logger.info(self.tokenizer.chat_template)
         eval_logger.info(self.tokenizer.special_tokens_map)
+
+
+    def evaluate_hermes(self, eval_dataset, chat_template, scratch_pad, num_fewshot):
+        for sample in tqdm(eval_dataset, desc="processing samples", unit="sample"):  
+            sample_splits = split_sample(sample)
+            prompt, _ = self.prompter.generate_prompt_hermes(sample_splits)
+            
+            inputs = self.tokenizer.apply_chat_template(
+                prompt,
+                add_generation_prompt=True,
+                return_tensors='pt'
+            )
+
+            tokens = self.model.generate(
+                inputs.to(self.model.device),
+                max_new_tokens=2048,
+                temperature=0.1,
+                do_sample=True
+            )[:, inputs.shape[-1]:]
+
+            completion = self.tokenizer.decode(tokens[0], skip_special_tokens=False)
+            eval_logger.info(f"model completion with eval prompt:\n{completion}")
+
+            assistant_message = completion.replace(self.tokenizer.eos_token, "")
+            validation, tool_calls = validate_and_extract_tool_calls_regex(assistant_message)
+
+            sample['model_completion'] = []
+            sample['result'] = "failed"
+
+            eval_completion = parse_completion(sample_splits['gpt'])
+            if eval_completion is None:
+                eval_logger.warning("Failed to parse completion")
+                continue
+            
+            eval_completion = validate_hermes_tool_calls(eval_completion)
+            if eval_completion is None:
+                eval_logger.warning("Failed to validate tool calls")
+                continue
+
+            if validation:
+                if isinstance(eval_completion, list):        
+                    eval_tool_calls = eval_completion
+                else:
+                    eval_tool_calls = [eval_completion]
+                
+                all_valid = True
+                if len(tool_calls) != len(eval_tool_calls):
+                    all_valid = False
+                    eval_logger.info("Number of tool calls doesn't match")
+                    eval_logger.info(f"Expected: {len(eval_tool_calls)} tool calls; Got: {len(tool_calls)}")
+
+                for eval_tool_call in eval_tool_calls:
+                    function_found = False
+
+                    for tool_call in tool_calls:
+                        # schema_validation = validate_function_call_schema(tool_call, json.loads(sample['tools']))
+                        # if not schema_validation:
+                        #     all_valid = False
+                        #     break
+
+                        if tool_call['name'] == eval_tool_call['name']:
+                            function_found = True
+                            result = validate_tool_calls(tool_call['arguments'], eval_tool_call['arguments'])
+                            sample['model_completion'].append(tool_call)
+                            eval_logger.info(f"{tool_call['name']} validation: {result}")
+                            if result == "failed":
+                                all_valid = False
+                            break
+                    if not function_found:
+                        eval_logger.info(f"Function '{eval_tool_call['name']}' not found") 
+                        all_valid = False         
+            else:
+                eval_logger.info("Function call validation failed")
+                all_valid = False
+            
+            if all_valid:
+                sample['result'] = "passed"
+                eval_logger.info(f"all validations: {sample['result']}")
+                eval_logger.info(f"parsed tool calls:\n{json.dumps(tool_calls, indent=2)}")
+            else:
+                sample['model_completion'] = assistant_message
+                eval_logger.info(f"all validations: {sample['result']}")
+                eval_logger.info(f"failed tool calls:\n{assistant_message}")
+
+            self.eval_results.append(sample)
 
     def evaluate_model(self, eval_dataset, chat_template, scratch_pad, num_fewshot):
 
@@ -173,13 +253,13 @@ if __name__ == "__main__":
     if args.dataset_path:
         eval_dataset = load_dataset(args.dataset_path)["train"]
     else:
-        eval_dataset = load_dataset("NousResearch/func-calling-eval-glaive")['train']
+        eval_dataset = load_dataset("riczhou/hermes-function-calling-v1-split", split="test")
 
     # Create model evaluator instance
     model_evaluator = ModelEvaluator(args.model_path, args.chat_template, args.load_in_4bit, args.flash_attn, args.dpo)
 
     # Run the model evaluator
-    model_evaluator.evaluate_model(eval_dataset, args.chat_template, args.scratch_pad, args.num_fewshot)
+    model_evaluator.evaluate_hermes(eval_dataset, args.chat_template, args.scratch_pad, args.num_fewshot)
 
     # Calculate and print pass rate
     pass_rate = calculate_pass_rate(model_evaluator.eval_results)

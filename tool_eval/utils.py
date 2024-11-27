@@ -6,6 +6,7 @@ import logging
 import datetime
 import xml.etree.ElementTree as ET
 from logging.handlers import RotatingFileHandler
+import hermes_utils
 
 logging.basicConfig(
     format="%(asctime)s,%(msecs)03d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s",
@@ -78,27 +79,15 @@ def get_assistant_message(completion, chat_template, eos_token):
         return assistant_content
 
 def validate_and_extract_tool_calls_regex(assistant_content):
-    validation_result = False
-    tool_calls = []
+    validation_result = hermes_utils.parse_completion(assistant_content)
+    if validation_result is None:
+        return False, []
     
-    # Regular expression to find content within <tool_call> tags
-    tool_call_pattern = re.compile(r'<tool_call>(.*?)</tool_call>', re.DOTALL)
+    validation_result = hermes_utils.validate_hermes_tool_calls(validation_result)
+    if validation_result is None:
+        return False, []
     
-    # Find all matches
-    matches = tool_call_pattern.findall(assistant_content)
-    
-    for match in matches:
-        try:
-            # Try to parse the content as JSON
-            json_data = json.loads(match.strip())
-            tool_calls.append(json_data)
-            validation_result = True
-        except json.JSONDecodeError as json_err:
-            eval_logger.error("JSON parsing failed:")
-            eval_logger.error("- JSON Decode Error: %s", json_err)
-            eval_logger.error("- Problematic JSON text: %s", match.strip())
-    
-    return validation_result, tool_calls
+    return True, validation_result
 
 def validate_and_extract_tool_calls(assistant_content):
         validation_result = False
